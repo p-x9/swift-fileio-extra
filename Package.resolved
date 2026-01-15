@@ -1,0 +1,24 @@
+{
+  "originHash" : "c47418e8d3d8fc6728a96c9f72af61842a48635bcc87bfcc09698b7f685309b5",
+  "pins" : [
+    {
+      "identity" : "swift-binary-parse-support",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/p-x9/swift-binary-parse-support.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "acf2a84b286aa639f0ab1417b09a1996b93b9801"
+      }
+    },
+    {
+      "identity" : "swift-fileio",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/p-x9/swift-fileio.git",
+      "state" : {
+        "revision" : "d589ff3966f9f064574780f527449a946736b989",
+        "version" : "0.13.0"
+      }
+    }
+  ],
+  "version" : 3
+}
