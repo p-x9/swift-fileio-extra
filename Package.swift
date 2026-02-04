@@ -2,7 +2,7 @@
 
 import PackageDescription
 
-let binaryParseSupportVersion: Version = "0.1.0"
+let binaryParseSupportVersion: Version = "0.2.1 "
 
 let package = Package(
     name: "swift-fileio-extra",
