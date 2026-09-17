@@ -10,6 +10,22 @@ import Foundation
 import FileIO
 @_spi(Core) import BinaryParseSupport
 
+// `memchr` below. Foundation re-exports libc on Darwin and Glibc but not on
+// Android, so the unqualified name needs this.
+#if os(Windows)
+import ucrt
+#elseif canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(WASILibc)
+import WASILibc
+#elseif canImport(Android)
+import Android
+#endif
+
 extension _FileIOProtocol {
     public func readDataSequence<Element>(
         offset: UInt64,
@@ -246,50 +262,84 @@ extension _FileIOProtocol {
         return String(cString: data)
     }
 
+    @inlinable
     @inline(__always)
     public func readString(
         offset: UInt64,
         step: Int = 10
     ) -> String? {
-        if let fileHandle = self as? (any _MemoryMappedFileIOProtocol) {
+        // The run reported here is bounded: a concatenated mapping holds one
+        // mapping per file, so scanning for the terminator past `count` would
+        // leave the segment. Without a terminator inside the run, fall
+        // through to the copying path, which crosses segments.
+        //
+        // `memchr` rather than a scan written here: it is the bounded form of
+        // `strlen`, and optimised the same way. Scanning by hand costs 40%
+        // more on long strings.
+        if let fileHandle = self as? (any _MemoryMappedFileIOProtocol),
+           let region = try? fileHandle.unsafeRegion(at: numericCast(offset)),
+           let terminator = memchr(region.pointer, 0, region.count) {
+            let length = UnsafeRawPointer(terminator)
+                - UnsafeRawPointer(region.pointer)
             return String(
-                cString: fileHandle.ptr
-                    .advanced(by: numericCast(offset))
-                    .assumingMemoryBound(to: CChar.self)
+                decoding: UnsafeRawBufferPointer(
+                    start: region.pointer,
+                    count: length
+                ),
+                as: UTF8.self
             )
-        } else {
-            var data = Data()
-            var offset = offset
-            while true {
-                guard let new = try? readData(
-                    offset: numericCast(offset),
-                    upToCount: step
-                ) else { break }
-                if new.isEmpty { break }
-                data.append(new)
-                if new.contains(0) { break }
-                offset += UInt64(new.count)
-            }
-
-            return String(cString: data)
         }
+
+        var data = Data()
+        var offset = offset
+        while true {
+            guard let new = try? readData(
+                offset: numericCast(offset),
+                upToCount: step
+            ) else { break }
+            if new.isEmpty { break }
+            data.append(new)
+            if new.contains(0) { break }
+            offset += UInt64(new.count)
+        }
+
+        return String(cString: data)
     }
 }
 
 extension _FileIOProtocol {
+    @inlinable
     @inline(__always)
     public func _readString<Encoding: _UnicodeEncoding>(
         offset: Int,
         as encoding: Encoding.Type
     ) -> (string: String, numberOfBytes: Int)? {
-        if let fileHandle = self as? (any _MemoryMappedFileIOProtocol) {
-            return UnsafeRawPointer(fileHandle.ptr)
-                .advanced(by: offset)
+        // Bounded by the contiguous run for the same reason as `readString`
+        // above, and falling through to the copying path when the terminator
+        // is not inside it.
+        //
+        // Only the scan is bounded; the string still comes from
+        // `String(decodingCString:)`. Building it from the bounded buffer
+        // means `String(decoding:as:)` over a generic `Encoding`, which does
+        // not specialise and costs 20x. A code unit wider than a byte has no
+        // `memchr`, so this scan is written out.
+        if let fileHandle = self as? (any _MemoryMappedFileIOProtocol),
+           let region = try? fileHandle.unsafeRegion(at: offset) {
+            let start = UnsafeRawPointer(region.pointer)
                 .assumingMemoryBound(to: Encoding.CodeUnit.self)
-                .readString(
-                    as: Encoding.self
+            let count = region.count / MemoryLayout<Encoding.CodeUnit>.size
+            var index = 0
+            while index < count, start[index] != 0 { index += 1 }
+            if index < count {
+                return (
+                    String(decodingCString: start, as: Encoding.self),
+                    (index + 1) * MemoryLayout<Encoding.CodeUnit>.size
                 )
-        } else {
+            }
+        }
+
+        // Scoped so that `offset` below can shadow the parameter.
+        do {
             var count = 0
             var offset: Int = offset
 
