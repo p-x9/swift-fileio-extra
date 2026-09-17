@@ -251,28 +251,30 @@ extension _FileIOProtocol {
         offset: UInt64,
         step: Int = 10
     ) -> String? {
-        if let fileHandle = self as? (any _MemoryMappedFileIOProtocol) {
-            return String(
-                cString: fileHandle.ptr
-                    .advanced(by: numericCast(offset))
-                    .assumingMemoryBound(to: CChar.self)
-            )
-        } else {
-            var data = Data()
-            var offset = offset
-            while true {
-                guard let new = try? readData(
-                    offset: numericCast(offset),
-                    upToCount: step
-                ) else { break }
-                if new.isEmpty { break }
-                data.append(new)
-                if new.contains(0) { break }
-                offset += UInt64(new.count)
-            }
-
-            return String(cString: data)
+        // The run reported here is bounded: a concatenated mapping holds one
+        // mapping per file, so scanning for the terminator past `count` would
+        // leave the segment. Without a terminator inside the run, fall
+        // through to the copying path, which crosses segments.
+        if let fileHandle = self as? (any _MemoryMappedFileIOProtocol),
+           let region = try? fileHandle.unsafeRegion(at: numericCast(offset)),
+           let end = region.buffer.firstIndex(of: 0) {
+            return String(decoding: region.buffer[0..<end], as: UTF8.self)
         }
+
+        var data = Data()
+        var offset = offset
+        while true {
+            guard let new = try? readData(
+                offset: numericCast(offset),
+                upToCount: step
+            ) else { break }
+            if new.isEmpty { break }
+            data.append(new)
+            if new.contains(0) { break }
+            offset += UInt64(new.count)
+        }
+
+        return String(cString: data)
     }
 }
 
@@ -282,14 +284,26 @@ extension _FileIOProtocol {
         offset: Int,
         as encoding: Encoding.Type
     ) -> (string: String, numberOfBytes: Int)? {
-        if let fileHandle = self as? (any _MemoryMappedFileIOProtocol) {
-            return UnsafeRawPointer(fileHandle.ptr)
-                .advanced(by: offset)
-                .assumingMemoryBound(to: Encoding.CodeUnit.self)
-                .readString(
-                    as: Encoding.self
+        // Bounded by the contiguous run for the same reason as `readString`
+        // above, and falling through to the copying path when the terminator
+        // is not inside it.
+        if let fileHandle = self as? (any _MemoryMappedFileIOProtocol),
+           let region = try? fileHandle.unsafeRegion(at: offset) {
+            let units = UnsafeBufferPointer(
+                start: UnsafeRawPointer(region.pointer)
+                    .assumingMemoryBound(to: Encoding.CodeUnit.self),
+                count: region.count / MemoryLayout<Encoding.CodeUnit>.size
+            )
+            if let end = units.firstIndex(of: 0) {
+                return (
+                    String(decoding: units[0..<end], as: Encoding.self),
+                    (end + 1) * MemoryLayout<Encoding.CodeUnit>.size
                 )
-        } else {
+            }
+        }
+
+        // Scoped so that `offset` below can shadow the parameter.
+        do {
             var count = 0
             var offset: Int = offset
 
