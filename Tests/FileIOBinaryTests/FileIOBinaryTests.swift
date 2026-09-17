@@ -106,3 +106,54 @@ extension FileIOBinaryTests {
         }
     }
 }
+
+extension FileIOBinaryTests {
+    /// A record whose string fills its slot exactly, with the terminator
+    /// outside it. Reading on past `size` used to return whatever followed in
+    /// memory, which varied between runs.
+    func testSizedReadStopsAtTheEndOfTheRange() throws {
+        try withTemporaryFiles([Data("Intersect Shapes".utf8)]) { urls in
+            let mapped = try MemoryMappedFile.open(url: urls[0], isWritable: false)
+            XCTAssertEqual(
+                mapped.readString(offset: 0, size: 16),
+                "Intersect Shapes"
+            )
+            let streamed = try StreamedFile.open(url: urls[0], isWritable: false)
+            XCTAssertEqual(
+                streamed.readString(offset: 0, size: 16),
+                "Intersect Shapes"
+            )
+        }
+    }
+
+    /// The padded shape, which is what a load command name looks like.
+    func testSizedReadStopsAtATerminatorInsideTheRange() throws {
+        try withTemporaryFiles([Data("abc\0\0\0".utf8)]) { urls in
+            let file = try MemoryMappedFile.open(url: urls[0], isWritable: false)
+            XCTAssertEqual(file.readString(offset: 0, size: 6), "abc")
+            XCTAssertEqual(file.readString(offset: 4, size: 2), "")
+        }
+    }
+
+    /// A range that spans two segments cannot come from one mapping, so it
+    /// takes the copying path instead.
+    func testSizedReadAcrossASegmentBoundary() throws {
+        try withTemporaryFiles([Data("abc".utf8), Data("def".utf8)]) { urls in
+            let file = try ConcatenatedMemoryMappedFile.open(
+                urls: urls,
+                isWritable: false
+            )
+            XCTAssertEqual(file.readString(offset: 0, size: 6), "abcdef")
+            XCTAssertEqual(file.readString(offset: 2, size: 3), "cde")
+        }
+    }
+
+    func testSizedReadRejectsEmptyAndOutOfRange() throws {
+        try withTemporaryFiles([Data("abcdef".utf8)]) { urls in
+            let file = try MemoryMappedFile.open(url: urls[0], isWritable: false)
+            XCTAssertNil(file.readString(offset: 0, size: 0))
+            XCTAssertNil(file.readString(offset: 0, size: 99))
+            XCTAssertNil(file.readString(offset: 99, size: 1))
+        }
+    }
+}
