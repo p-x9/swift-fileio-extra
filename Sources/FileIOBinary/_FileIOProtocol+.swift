@@ -10,6 +10,22 @@ import Foundation
 import FileIO
 @_spi(Core) import BinaryParseSupport
 
+// `memchr` below. Foundation re-exports libc on Darwin and Glibc but not on
+// Android, so the unqualified name needs this.
+#if os(Windows)
+import ucrt
+#elseif canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(WASILibc)
+import WASILibc
+#elseif canImport(Android)
+import Android
+#endif
+
 extension _FileIOProtocol {
     public func readDataSequence<Element>(
         offset: UInt64,
@@ -246,6 +262,7 @@ extension _FileIOProtocol {
         return String(cString: data)
     }
 
+    @inlinable
     @inline(__always)
     public func readString(
         offset: UInt64,
@@ -255,10 +272,22 @@ extension _FileIOProtocol {
         // mapping per file, so scanning for the terminator past `count` would
         // leave the segment. Without a terminator inside the run, fall
         // through to the copying path, which crosses segments.
+        //
+        // `memchr` rather than a scan written here: it is the bounded form of
+        // `strlen`, and optimised the same way. Scanning by hand costs 40%
+        // more on long strings.
         if let fileHandle = self as? (any _MemoryMappedFileIOProtocol),
            let region = try? fileHandle.unsafeRegion(at: numericCast(offset)),
-           let end = region.buffer.firstIndex(of: 0) {
-            return String(decoding: region.buffer[0..<end], as: UTF8.self)
+           let terminator = memchr(region.pointer, 0, region.count) {
+            let length = UnsafeRawPointer(terminator)
+                - UnsafeRawPointer(region.pointer)
+            return String(
+                decoding: UnsafeRawBufferPointer(
+                    start: region.pointer,
+                    count: length
+                ),
+                as: UTF8.self
+            )
         }
 
         var data = Data()
@@ -279,6 +308,7 @@ extension _FileIOProtocol {
 }
 
 extension _FileIOProtocol {
+    @inlinable
     @inline(__always)
     public func _readString<Encoding: _UnicodeEncoding>(
         offset: Int,
@@ -287,17 +317,23 @@ extension _FileIOProtocol {
         // Bounded by the contiguous run for the same reason as `readString`
         // above, and falling through to the copying path when the terminator
         // is not inside it.
+        //
+        // Only the scan is bounded; the string still comes from
+        // `String(decodingCString:)`. Building it from the bounded buffer
+        // means `String(decoding:as:)` over a generic `Encoding`, which does
+        // not specialise and costs 20x. A code unit wider than a byte has no
+        // `memchr`, so this scan is written out.
         if let fileHandle = self as? (any _MemoryMappedFileIOProtocol),
            let region = try? fileHandle.unsafeRegion(at: offset) {
-            let units = UnsafeBufferPointer(
-                start: UnsafeRawPointer(region.pointer)
-                    .assumingMemoryBound(to: Encoding.CodeUnit.self),
-                count: region.count / MemoryLayout<Encoding.CodeUnit>.size
-            )
-            if let end = units.firstIndex(of: 0) {
+            let start = UnsafeRawPointer(region.pointer)
+                .assumingMemoryBound(to: Encoding.CodeUnit.self)
+            let count = region.count / MemoryLayout<Encoding.CodeUnit>.size
+            var index = 0
+            while index < count, start[index] != 0 { index += 1 }
+            if index < count {
                 return (
-                    String(decoding: units[0..<end], as: Encoding.self),
-                    (end + 1) * MemoryLayout<Encoding.CodeUnit>.size
+                    String(decodingCString: start, as: Encoding.self),
+                    (index + 1) * MemoryLayout<Encoding.CodeUnit>.size
                 )
             }
         }
