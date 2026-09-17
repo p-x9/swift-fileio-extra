@@ -106,3 +106,71 @@ extension FileIOBinaryTests {
         }
     }
 }
+
+extension FileIOBinaryTests {
+    /// A record whose string fills its slot exactly, with the terminator
+    /// outside it. Reading on past `size` used to return whatever followed in
+    /// memory, which varied between runs.
+    ///
+    /// The fixture keeps going after the slot, with its own terminator much
+    /// later, so `size` is the only thing that can stop the read: an
+    /// implementation bounded by the mapping rather than by `size` returns
+    /// the whole lot and fails here.
+    func testSizedReadStopsAtTheEndOfTheRange() throws {
+        let contents = Data("Intersect ShapesUnion ShapesSubtract Shapes\0".utf8)
+        try withTemporaryFiles([contents]) { urls in
+            let mapped = try MemoryMappedFile.open(url: urls[0], isWritable: false)
+            XCTAssertEqual(
+                mapped.readString(offset: 0, size: 16),
+                "Intersect Shapes"
+            )
+            XCTAssertEqual(
+                mapped.readString(offset: 16, size: 12),
+                "Union Shapes"
+            )
+
+            let streamed = try StreamedFile.open(url: urls[0], isWritable: false)
+            XCTAssertEqual(
+                streamed.readString(offset: 0, size: 16),
+                "Intersect Shapes"
+            )
+            XCTAssertEqual(
+                streamed.readString(offset: 16, size: 12),
+                "Union Shapes"
+            )
+        }
+    }
+
+    /// The padded shape, which is what a load command name looks like. More
+    /// data follows the slot here too, for the same reason as above.
+    func testSizedReadStopsAtATerminatorInsideTheRange() throws {
+        try withTemporaryFiles([Data("abc\0\0\0defghi\0".utf8)]) { urls in
+            let file = try MemoryMappedFile.open(url: urls[0], isWritable: false)
+            XCTAssertEqual(file.readString(offset: 0, size: 6), "abc")
+            XCTAssertEqual(file.readString(offset: 4, size: 2), "")
+            XCTAssertEqual(file.readString(offset: 6, size: 3), "def")
+        }
+    }
+
+    /// A range that spans two segments cannot come from one mapping, so it
+    /// takes the copying path instead.
+    func testSizedReadAcrossASegmentBoundary() throws {
+        try withTemporaryFiles([Data("abc".utf8), Data("def".utf8)]) { urls in
+            let file = try ConcatenatedMemoryMappedFile.open(
+                urls: urls,
+                isWritable: false
+            )
+            XCTAssertEqual(file.readString(offset: 0, size: 6), "abcdef")
+            XCTAssertEqual(file.readString(offset: 2, size: 3), "cde")
+        }
+    }
+
+    func testSizedReadRejectsEmptyAndOutOfRange() throws {
+        try withTemporaryFiles([Data("abcdef".utf8)]) { urls in
+            let file = try MemoryMappedFile.open(url: urls[0], isWritable: false)
+            XCTAssertNil(file.readString(offset: 0, size: 0))
+            XCTAssertNil(file.readString(offset: 0, size: 99))
+            XCTAssertNil(file.readString(offset: 99, size: 1))
+        }
+    }
+}
