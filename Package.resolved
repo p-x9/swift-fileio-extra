@@ -1,13 +1,13 @@
 {
-  "originHash" : "096973871202145a6a8a74248b0ed3eb50df0196042e1a79223bb417ca3b4475",
+  "originHash" : "5f7fe8fe1a25dc4145e778a96c2a995fe934cb16f1e61a1f03fe0f1f5156a22a",
   "pins" : [
     {
       "identity" : "swift-binary-parse-support",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/p-x9/swift-binary-parse-support.git",
       "state" : {
-        "revision" : "5fb96b503672ea4752eded6b4e301fd87214b03b",
-        "version" : "0.2.1"
+        "revision" : "b4042df3819fde93ce952a111607ec8ffc4ee704",
+        "version" : "0.3.0"
       }
     },
     {
